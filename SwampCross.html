@@ -1,0 +1,379 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Light Through Grain Cross</title>
+  <style>
+    *{box-sizing:border-box}
+
+    html,body{
+      margin:0;
+      width:100%;
+      min-height:100%;
+      background:#151714;
+    }
+
+    body{
+      min-height:100vh;
+      display:grid;
+      place-items:center;
+      overflow:hidden;
+    }
+
+    #crossButton{
+      width:260px;
+      height:320px;
+      padding:0;
+      border:0;
+      background:transparent;
+      cursor:pointer;
+      touch-action:none;
+      -webkit-tap-highlight-color:transparent;
+    }
+
+    #crossButton:active{transform:none}
+
+    #crossButton:focus-visible{
+      outline:2px solid rgba(236,226,198,.62);
+      outline-offset:10px;
+      border-radius:18px;
+    }
+
+    canvas{
+      display:block;
+      width:260px;
+      height:320px;
+    }
+  </style>
+</head>
+<body>
+  <button id="crossButton" type="button" aria-label="Cross formed by continuously rising smoke">
+    <canvas id="crossCanvas" width="520" height="640" aria-hidden="true"></canvas>
+  </button>
+
+  <script>
+    const button = document.getElementById('crossButton');
+    const canvas = document.getElementById('crossCanvas');
+    const ctx = canvas.getContext('2d');
+    const width = canvas.width;
+    const height = canvas.height;
+
+    const mistCanvas = document.createElement('canvas');
+    mistCanvas.width = width;
+    mistCanvas.height = height;
+    const mistCtx = mistCanvas.getContext('2d');
+
+    const cross = new Path2D(
+      'M210 32 H310 Q326 32 326 48 V166 H454 Q470 166 470 182 V278 Q470 294 454 294 H326 V606 Q326 622 310 622 H210 Q194 622 194 606 V294 H66 Q50 294 50 278 V182 Q50 166 66 166 H194 V48 Q194 32 210 32 Z'
+    );
+
+    const topAtX = new Int16Array(width);
+    for(let x = 0; x < width; x++){
+      for(let y = 0; y < height; y++){
+        if(ctx.isPointInPath(cross,x,y)){
+          topAtX[x] = y;
+          break;
+        }
+      }
+    }
+
+    const particles = [];
+    const brewingClouds = [];
+    const particleLimit = 50;
+    const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    let lastTime = performance.now();
+    let spawnCarry = 0;
+
+    function chooseBranch(){
+      if(Math.random() > .78) return 0;
+      return Math.random() < .5 ? -1 : 1;
+    }
+
+    function randomPointInsideCross(){
+      for(let attempt = 0; attempt < 80; attempt++){
+        const x = 54 + Math.random() * 412;
+        const y = 36 + Math.random() * 580;
+        if(ctx.isPointInPath(cross,x,y)) return {x,y};
+      }
+      return {x:260,y:500};
+    }
+
+    function randomPointAtBottom(){
+      return {
+        x:206 + Math.random() * 108,
+        y:574 + Math.random() * 34
+      };
+    }
+
+    function chooseReturnCurrent(){
+      const route = Math.random();
+
+      /* Eighteen percent enters through each arm and drifts toward center. */
+      if(route < .18){
+        return {
+          x:68 + Math.random() * 54,
+          y:204 + Math.random() * 54,
+          velocityX:.07 + Math.random() * .07,
+          velocityY:-.015 - Math.random() * .035,
+          inwardDirection:1,
+          branchDirection:0
+        };
+      }
+
+      if(route < .36){
+        return {
+          x:398 + Math.random() * 54,
+          y:204 + Math.random() * 54,
+          velocityX:-.07 - Math.random() * .07,
+          velocityY:-.015 - Math.random() * .035,
+          inwardDirection:-1,
+          branchDirection:0
+        };
+      }
+
+      /* The remaining current keeps the stem's original upward movement. */
+      const bottom = randomPointAtBottom();
+      return {
+        x:bottom.x,
+        y:bottom.y,
+        velocityX:(Math.random() - .5) * .18,
+        velocityY:-.06 - Math.random() * .18,
+        inwardDirection:0,
+        branchDirection:chooseBranch()
+      };
+    }
+
+    function createParticle(){
+      const point = randomPointInsideCross();
+      const size = 50 + Math.random() * 34;
+      return {
+        x:point.x,
+        y:point.y,
+        size,
+        velocityX:(Math.random() - .5) * .18,
+        velocityY:-.06 - Math.random() * .18,
+        phase:Math.random() * Math.PI * 2,
+        speed:.007 + Math.random() * .012,
+        alpha:0,
+        targetAlpha:.075 + Math.random() * .105,
+        warmth:Math.random(),
+        fadeInAge:-1,
+        fadeInDuration:0,
+        poolX:null,
+        poolY:null,
+        inwardDirection:0,
+        branchDirection:chooseBranch()
+      };
+    }
+
+    function smoothstep(value){
+      const t = Math.max(0,Math.min(1,value));
+      return t * t * (3 - 2 * t);
+    }
+
+    function recycleFromCeiling(particle){
+      const fadeInDuration = 5200 + Math.random() * 3600;
+      const holdDuration = 4200 + Math.random() * 3000;
+      const fadeDuration = 7200 + Math.random() * 4000;
+
+      /*
+        The gathered cloud stays pinned to the exact ceiling contact point.
+        It rests at full strength before fading while its continuation rises.
+      */
+      brewingClouds.push({
+        x:particle.poolX ?? particle.x,
+        y:particle.poolY ?? particle.y,
+        size:particle.size,
+        phase:particle.phase,
+        speed:particle.speed,
+        warmth:particle.warmth,
+        startAlpha:particle.alpha,
+        alpha:particle.alpha,
+        age:0,
+        holdDuration,
+        fadeDuration
+      });
+
+      const current = chooseReturnCurrent();
+      particle.x = current.x;
+      particle.y = current.y;
+      particle.velocityX = current.velocityX;
+      particle.velocityY = current.velocityY;
+      particle.fadeInAge = 0;
+      particle.fadeInDuration = fadeInDuration;
+      particle.poolX = null;
+      particle.poolY = null;
+      particle.inwardDirection = current.inwardDirection;
+      particle.branchDirection = current.branchDirection;
+      particle.alpha = 0;
+    }
+
+    function updateBrewingClouds(delta,elapsed){
+      for(let i = brewingClouds.length - 1; i >= 0; i--){
+        const cloud = brewingClouds[i];
+        cloud.age += elapsed;
+        cloud.phase += cloud.speed * delta * .34;
+        const fadeAge = Math.max(0,cloud.age - cloud.holdDuration);
+        const progress = smoothstep(fadeAge / cloud.fadeDuration);
+        cloud.alpha = cloud.startAlpha * (1 - progress);
+
+        if(fadeAge >= cloud.fadeDuration){
+          brewingClouds.splice(i,1);
+        }
+      }
+    }
+
+    function update(delta){
+      const elapsed = delta * 16.667;
+
+      /* Original grain engine: collection at the ceiling remains untouched. */
+      spawnCarry += delta * (reducedMotion ? .24 : .64);
+      while(spawnCarry >= 1 && particles.length < particleLimit){
+        particles.push(createParticle());
+        spawnCarry--;
+      }
+
+      for(let i = particles.length - 1; i >= 0; i--){
+        const particle = particles[i];
+        if(particle.fadeInAge >= 0){
+          particle.fadeInAge += elapsed;
+          particle.alpha = particle.targetAlpha *
+            smoothstep(particle.fadeInAge / particle.fadeInDuration);
+          if(particle.fadeInAge >= particle.fadeInDuration){
+            particle.fadeInAge = -1;
+          }
+        }else{
+          particle.alpha += (particle.targetAlpha - particle.alpha) * .035 * delta;
+        }
+
+        /* Once an arm current reaches the intersection, it joins the rise. */
+        if(particle.inwardDirection && particle.x > 190 && particle.x < 330){
+          particle.inwardDirection = 0;
+        }
+
+        if(!reducedMotion){
+          particle.phase += particle.speed * delta;
+          particle.velocityX += Math.sin(particle.phase) * .009 * delta;
+          particle.velocityY += (Math.cos(particle.phase * .73) * .006 - .004) * delta;
+
+          /*
+            Side-born clouds hold a loose horizontal lane while traveling
+            inward. The current dissolves naturally at the center.
+          */
+          if(particle.inwardDirection){
+            particle.velocityX += particle.inwardDirection * .0058 * delta;
+            particle.velocityY += (231 - particle.y) * .000045 * delta;
+          }
+
+          /* A gentle current divides rising smoke into the horizontal arms. */
+          if(particle.branchDirection && particle.y > 164 && particle.y < 310 &&
+             particle.x > 174 && particle.x < 346){
+            const position = (310 - particle.y) / 146;
+            const influence = Math.sin(Math.PI * Math.max(0,Math.min(1,position)));
+            particle.velocityX += particle.branchDirection * .0065 * influence * delta;
+          }
+        }
+
+        particle.velocityX *= Math.pow(.991,delta);
+        particle.velocityY *= Math.pow(.993,delta);
+
+        const oldX = particle.x;
+        const oldY = particle.y;
+        particle.x += particle.velocityX * delta;
+        particle.y += particle.velocityY * delta;
+
+        /* Original soft wall redirection creates the collection we are keeping. */
+        if(!ctx.isPointInPath(cross,particle.x,particle.y)){
+          const column = Math.max(0,Math.min(width - 1,Math.round(oldX)));
+          const touchedCeiling = particle.velocityY < 0 &&
+            particle.y <= topAtX[column] + 2;
+
+          particle.x = oldX;
+          particle.y = oldY;
+          particle.velocityX *= -.42;
+          particle.velocityY *= -.42;
+
+          /*
+            Transfer the visible cloud into the ceiling pool on this exact
+            contact frame. Its continuation restarts below with a slow fade.
+          */
+          if(touchedCeiling && particle.fadeInAge < 0){
+            particle.poolX = oldX;
+            particle.poolY = oldY;
+            recycleFromCeiling(particle);
+          }
+        }
+
+        if(!Number.isFinite(particle.x) || !Number.isFinite(particle.y)){
+          particles.splice(i,1);
+        }
+      }
+
+      /* Only one fully brewed cloud may begin its return after a long pause. */
+      updateBrewingClouds(delta,elapsed);
+    }
+
+    function drawCloud(particle,drawX,drawY,radius,alpha){
+        const gradient = mistCtx.createRadialGradient(
+          drawX,drawY,0,
+          drawX,drawY,radius
+        );
+        const warm = particle.warmth > .52 ? '102,218,198' : '80,99,17';
+        gradient.addColorStop(0,`rgba(${warm},${alpha})`);
+        gradient.addColorStop(.42,`rgba(${warm},${alpha * .52})`);
+        gradient.addColorStop(1,`rgba(${warm},0)`);
+        mistCtx.fillStyle = gradient;
+        mistCtx.beginPath();
+        mistCtx.arc(drawX,drawY,radius,0,Math.PI * 2);
+        mistCtx.fill();
+    }
+
+    function drawMist(){
+      mistCtx.clearRect(0,0,width,height);
+
+      for(const cloud of brewingClouds){
+        const radius = cloud.size * (1 + Math.sin(cloud.phase * .7) * .08);
+        drawCloud(cloud,cloud.x,cloud.y,radius,cloud.alpha);
+      }
+
+      for(const particle of particles){
+        const radius = particle.size * (1 + Math.sin(particle.phase * .7) * .08);
+        drawCloud(particle,particle.x,particle.y,radius,particle.alpha);
+      }
+
+    }
+
+    function render(time){
+      ctx.clearRect(0,0,width,height);
+
+      drawMist();
+
+      ctx.save();
+      ctx.clip(cross);
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.drawImage(mistCanvas,0,0);
+      ctx.restore();
+
+      ctx.globalCompositeOperation = 'source-over';
+    }
+
+    function frame(time){
+      const delta = Math.min(2.5,(time - lastTime) / 16.667 || 1);
+      lastTime = time;
+      update(delta);
+      render(time);
+      requestAnimationFrame(frame);
+    }
+
+    /* Begin completely populated: there is no initial smoke fade-in. */
+    while(particles.length < particleLimit){
+      const particle = createParticle();
+      particle.alpha = particle.targetAlpha;
+      particles.push(particle);
+    }
+
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>
