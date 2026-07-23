@@ -1,0 +1,487 @@
+const button = document.getElementById('crossButton');
+const canvas = document.getElementById('crossCanvas');
+const ctx = canvas.getContext('2d');
+const width = canvas.width;
+const height = canvas.height;
+let suppressNativeTouchClickUntil = 0;
+
+function suppressAppleLongPress(event){
+  if(event.cancelable) event.preventDefault();
+}
+
+function pressButton(event){
+  if(event.pointerType === 'mouse' && event.button !== 0) return;
+  button.classList.add('is-pressed');
+  if(button.setPointerCapture){
+    button.setPointerCapture(event.pointerId);
+  }
+}
+
+function releaseButton(event){
+  const touchRelease = event?.pointerType === 'touch';
+  button.classList.remove('is-pressed');
+  if(event?.pointerId !== undefined &&
+     button.hasPointerCapture?.(event.pointerId)){
+    button.releasePointerCapture(event.pointerId);
+  }
+
+  /*
+    Preventing Apple's touch gesture also prevents its native click.
+    Restore exactly one semantic button activation when the touch ends.
+  */
+  if(touchRelease){
+    suppressNativeTouchClickUntil = performance.now() + 700;
+    button.click();
+  }
+}
+
+button.addEventListener('touchstart',suppressAppleLongPress,{passive:false});
+button.addEventListener('touchmove',suppressAppleLongPress,{passive:false});
+button.addEventListener('touchend',suppressAppleLongPress,{passive:false});
+button.addEventListener('pointerdown',pressButton);
+button.addEventListener('pointerup',releaseButton);
+button.addEventListener('pointercancel',releaseButton);
+button.addEventListener('lostpointercapture',releaseButton);
+button.addEventListener('selectstart',event => event.preventDefault());
+button.addEventListener('dragstart',event => event.preventDefault());
+button.addEventListener('contextmenu',event => event.preventDefault());
+button.addEventListener('click',event => {
+  if(event.isTrusted &&
+     performance.now() < suppressNativeTouchClickUntil){
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }
+},true);
+
+button.addEventListener('keydown',event => {
+  if((event.key === ' ' || event.key === 'Enter') && !event.repeat){
+    button.classList.add('is-pressed');
+  }
+});
+
+button.addEventListener('keyup',event => {
+  if(event.key === ' ' || event.key === 'Enter'){
+    button.classList.remove('is-pressed');
+  }
+});
+
+button.addEventListener('blur',() => {
+  button.classList.remove('is-pressed');
+});
+
+const mistCanvas = document.createElement('canvas');
+mistCanvas.width = width;
+mistCanvas.height = height;
+const mistCtx = mistCanvas.getContext('2d');
+
+const cross = new Path2D(
+  'M210 32 H310 Q326 32 326 48 V166 H454 Q470 166 470 182 V278 Q470 294 454 294 H326 V606 Q326 622 310 622 H210 Q194 622 194 606 V294 H66 Q50 294 50 278 V182 Q50 166 66 166 H194 V48 Q194 32 210 32 Z'
+);
+
+const topAtX = new Int16Array(width);
+for(let x = 0; x < width; x++){
+  for(let y = 0; y < height; y++){
+    if(ctx.isPointInPath(cross,x,y)){
+      topAtX[x] = y;
+      break;
+    }
+  }
+}
+
+const particles = [];
+const brewingClouds = [];
+const particleLimit = 50;
+const armParticlesPerSide = 10;
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+let lastTime = performance.now();
+let spawnCarry = 0;
+
+function chooseBranch(){
+  if(Math.random() > .78) return 0;
+  return Math.random() < .5 ? -1 : 1;
+}
+
+function randomPointInsideCross(){
+  for(let attempt = 0; attempt < 80; attempt++){
+    const x = 54 + Math.random() * 412;
+    const y = 36 + Math.random() * 580;
+    if(ctx.isPointInPath(cross,x,y)) return {x,y};
+  }
+  return {x:260,y:500};
+}
+
+function randomPointAtBottom(){
+  return {
+    x:206 + Math.random() * 108,
+    y:574 + Math.random() * 34
+  };
+}
+
+function chooseStemReturnCurrent(){
+  const bottom = randomPointAtBottom();
+  return {
+    x:bottom.x,
+    y:bottom.y,
+    velocityX:(Math.random() - .5) * .18,
+    velocityY:-.06 - Math.random() * .18,
+    inwardDirection:0,
+    armLaneY:null,
+    branchDirection:chooseBranch()
+  };
+}
+
+function chooseArmCurrent(side,lowerEntry){
+  const direction = side === 'left' ? 1 : -1;
+
+  if(lowerEntry){
+    const armLaneY = 252 + Math.random() * 28;
+    return {
+      x:side === 'left'
+        ? 68 + Math.random() * 54
+        : 398 + Math.random() * 54,
+      y:armLaneY + (Math.random() - .5) * 10,
+      velocityX:direction * (.07 + Math.random() * .07),
+      velocityY:-.004 - Math.random() * .015,
+      inwardDirection:direction,
+      armLaneY,
+      branchDirection:0
+    };
+  }
+
+  const armLaneY = 228 + Math.random() * 48;
+  return {
+    x:side === 'left'
+      ? 52 + Math.random() * 6
+      : 468 - Math.random() * 6,
+    y:armLaneY + (Math.random() - .5) * 6,
+    velocityX:direction * (.07 + Math.random() * .07),
+    velocityY:(Math.random() - .5) * .012,
+    inwardDirection:direction,
+    armLaneY,
+    branchDirection:0
+  };
+}
+
+function createParticle(sourceRole='stem',slot=0){
+  const size = 50 + Math.random() * 34;
+  const isArm = sourceRole !== 'stem';
+  const lowerEntry = isArm && slot % 2 === 1;
+  const current = isArm
+    ? chooseArmCurrent(sourceRole,lowerEntry)
+    : {
+        ...randomPointInsideCross(),
+        velocityX:(Math.random() - .5) * .18,
+        velocityY:-.06 - Math.random() * .18,
+        inwardDirection:0,
+        armLaneY:null,
+        branchDirection:chooseBranch()
+      };
+
+  /* Spread dedicated arm clouds across their lanes on the first frame. */
+  if(isArm){
+    const centerX = sourceRole === 'left' ? 190 : 330;
+    current.x += (centerX - current.x) * Math.random() * .82;
+  }
+
+  return {
+    x:current.x,
+    y:current.y,
+    size,
+    velocityX:current.velocityX,
+    velocityY:current.velocityY,
+    phase:Math.random() * Math.PI * 2,
+    speed:.007 + Math.random() * .012,
+    alpha:0,
+    targetAlpha:.075 + Math.random() * .105,
+    warmth:Math.random(),
+    fadeInAge:-1,
+    fadeInDuration:0,
+    poolX:null,
+    poolY:null,
+    sourceRole,
+    nextLowerEntry:isArm ? !lowerEntry : false,
+    inwardDirection:current.inwardDirection,
+    armLaneY:current.armLaneY,
+    branchDirection:current.branchDirection
+  };
+}
+
+function nextSourceRole(){
+  let left = 0;
+  let right = 0;
+
+  for(const particle of particles){
+    if(particle.sourceRole === 'left') left++;
+    if(particle.sourceRole === 'right') right++;
+  }
+
+  if(left < armParticlesPerSide) return 'left';
+  if(right < armParticlesPerSide) return 'right';
+  return 'stem';
+}
+
+function smoothstep(value){
+  const t = Math.max(0,Math.min(1,value));
+  return t * t * (3 - 2 * t);
+}
+
+function recycleFromCeiling(particle){
+  const fadeInDuration = 5200 + Math.random() * 3600;
+  const holdDuration = 4200 + Math.random() * 3000;
+  const fadeDuration = 7200 + Math.random() * 4000;
+
+  /*
+    The gathered cloud stays pinned to the exact ceiling contact point.
+    It rests at full strength before fading while its continuation rises.
+  */
+  brewingClouds.push({
+    x:particle.poolX ?? particle.x,
+    y:particle.poolY ?? particle.y,
+    size:particle.size,
+    phase:particle.phase,
+    speed:particle.speed,
+    warmth:particle.warmth,
+    startAlpha:particle.alpha,
+    alpha:particle.alpha,
+    age:0,
+    holdDuration,
+    fadeDuration
+  });
+
+  const current = chooseStemReturnCurrent();
+  particle.x = current.x;
+  particle.y = current.y;
+  particle.velocityX = current.velocityX;
+  particle.velocityY = current.velocityY;
+  particle.fadeInAge = 0;
+  particle.fadeInDuration = fadeInDuration;
+  particle.poolX = null;
+  particle.poolY = null;
+  particle.inwardDirection = current.inwardDirection;
+  particle.armLaneY = current.armLaneY;
+  particle.branchDirection = current.branchDirection;
+  particle.alpha = 0;
+}
+
+function handoffArmAtCenter(particle){
+  /*
+    Preserve the arriving haze at the intersection while its dedicated
+    arm particle restarts. This makes the loop visually continuous.
+  */
+  brewingClouds.push({
+    x:particle.x,
+    y:particle.y,
+    size:particle.size,
+    phase:particle.phase,
+    speed:particle.speed,
+    warmth:particle.warmth,
+    startAlpha:particle.alpha,
+    alpha:particle.alpha,
+    age:0,
+    holdDuration:0,
+    fadeDuration:2400 + Math.random() * 1800
+  });
+
+  const lowerEntry = particle.nextLowerEntry;
+  const current = chooseArmCurrent(particle.sourceRole,lowerEntry);
+  particle.x = current.x;
+  particle.y = current.y;
+  particle.velocityX = current.velocityX;
+  particle.velocityY = current.velocityY;
+  particle.fadeInAge = 0;
+  particle.fadeInDuration = 2800 + Math.random() * 1800;
+  particle.poolX = null;
+  particle.poolY = null;
+  particle.nextLowerEntry = !lowerEntry;
+  particle.inwardDirection = current.inwardDirection;
+  particle.armLaneY = current.armLaneY;
+  particle.branchDirection = 0;
+  particle.alpha = 0;
+}
+
+function updateBrewingClouds(delta,elapsed){
+  for(let i = brewingClouds.length - 1; i >= 0; i--){
+    const cloud = brewingClouds[i];
+    cloud.age += elapsed;
+    cloud.phase += cloud.speed * delta * .34;
+    const fadeAge = Math.max(0,cloud.age - cloud.holdDuration);
+    const progress = smoothstep(fadeAge / cloud.fadeDuration);
+    cloud.alpha = cloud.startAlpha * (1 - progress);
+
+    if(fadeAge >= cloud.fadeDuration){
+      brewingClouds.splice(i,1);
+    }
+  }
+}
+
+function update(delta){
+  const elapsed = delta * 16.667;
+
+  /* Original grain engine: collection at the ceiling remains untouched. */
+  spawnCarry += delta * (reducedMotion ? .24 : .64);
+  while(spawnCarry >= 1 && particles.length < particleLimit){
+    particles.push(createParticle(nextSourceRole()));
+    spawnCarry--;
+  }
+
+  for(let i = particles.length - 1; i >= 0; i--){
+    const particle = particles[i];
+    if(particle.fadeInAge >= 0){
+      particle.fadeInAge += elapsed;
+      particle.alpha = particle.targetAlpha *
+        smoothstep(particle.fadeInAge / particle.fadeInDuration);
+      if(particle.fadeInAge >= particle.fadeInDuration){
+        particle.fadeInAge = -1;
+      }
+    }else{
+      particle.alpha += (particle.targetAlpha - particle.alpha) * .035 * delta;
+    }
+
+    /*
+      Dedicated arm currents hand their visible haze into the intersection,
+      then restart without ever starving either arm.
+    */
+    if(particle.inwardDirection && particle.x > 190 && particle.x < 330){
+      if(particle.sourceRole === 'left' ||
+         particle.sourceRole === 'right'){
+        handoffArmAtCenter(particle);
+      }else{
+        particle.inwardDirection = 0;
+        particle.armLaneY = null;
+      }
+    }
+
+    if(!reducedMotion){
+      particle.phase += particle.speed * delta;
+      particle.velocityX += Math.sin(particle.phase) * .009 * delta;
+      particle.velocityY += (Math.cos(particle.phase * .73) * .006 - .004) * delta;
+
+      /*
+        Side-born clouds hold a loose horizontal lane while traveling
+        inward. The current dissolves naturally at the center.
+      */
+      if(particle.inwardDirection){
+        particle.velocityX += particle.inwardDirection * .0058 * delta;
+        particle.velocityY +=
+          (particle.armLaneY - particle.y) * .00005 * delta;
+      }
+
+      /* A gentle current divides rising smoke into the horizontal arms. */
+      if(particle.branchDirection && particle.y > 164 && particle.y < 310 &&
+         particle.x > 174 && particle.x < 346){
+        const position = (310 - particle.y) / 146;
+        const influence = Math.sin(Math.PI * Math.max(0,Math.min(1,position)));
+        particle.velocityX += particle.branchDirection * .0065 * influence * delta;
+      }
+    }
+
+    particle.velocityX *= Math.pow(.991,delta);
+    particle.velocityY *= Math.pow(.993,delta);
+
+    const oldX = particle.x;
+    const oldY = particle.y;
+    particle.x += particle.velocityX * delta;
+    particle.y += particle.velocityY * delta;
+
+    /* Original soft wall redirection creates the collection we are keeping. */
+    if(!ctx.isPointInPath(cross,particle.x,particle.y)){
+      const column = Math.max(0,Math.min(width - 1,Math.round(oldX)));
+      const touchedCeiling = particle.velocityY < 0 &&
+        particle.y <= topAtX[column] + 2;
+
+      particle.x = oldX;
+      particle.y = oldY;
+      particle.velocityX *= -.42;
+      particle.velocityY *= -.42;
+
+      /*
+        Transfer the visible cloud into the ceiling pool on this exact
+        contact frame. Its continuation restarts below with a slow fade.
+      */
+      if(touchedCeiling && particle.fadeInAge < 0 &&
+         particle.sourceRole === 'stem'){
+        particle.poolX = oldX;
+        particle.poolY = oldY;
+        recycleFromCeiling(particle);
+      }
+    }
+
+    if(!Number.isFinite(particle.x) || !Number.isFinite(particle.y)){
+      particles.splice(i,1);
+    }
+  }
+
+  /* Only one fully brewed cloud may begin its return after a long pause. */
+  updateBrewingClouds(delta,elapsed);
+}
+
+function drawCloud(particle,drawX,drawY,radius,alpha){
+  const gradient = mistCtx.createRadialGradient(
+    drawX,drawY,0,
+    drawX,drawY,radius
+  );
+  const warm = particle.warmth > .52 ? '102,218,198' : '80,99,17';
+  gradient.addColorStop(0,`rgba(${warm},${alpha})`);
+  gradient.addColorStop(.42,`rgba(${warm},${alpha * .52})`);
+  gradient.addColorStop(1,`rgba(${warm},0)`);
+  mistCtx.fillStyle = gradient;
+  mistCtx.beginPath();
+  mistCtx.arc(drawX,drawY,radius,0,Math.PI * 2);
+  mistCtx.fill();
+}
+
+function drawMist(){
+  mistCtx.clearRect(0,0,width,height);
+
+  for(const cloud of brewingClouds){
+    const radius = cloud.size * (1 + Math.sin(cloud.phase * .7) * .08);
+    drawCloud(cloud,cloud.x,cloud.y,radius,cloud.alpha);
+  }
+
+  for(const particle of particles){
+    const radius = particle.size * (1 + Math.sin(particle.phase * .7) * .08);
+    drawCloud(particle,particle.x,particle.y,radius,particle.alpha);
+  }
+}
+
+function render(time){
+  ctx.clearRect(0,0,width,height);
+
+  drawMist();
+
+  ctx.save();
+  ctx.clip(cross);
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.drawImage(mistCanvas,0,0);
+  ctx.restore();
+
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+function frame(time){
+  const delta = Math.min(2.5,(time - lastTime) / 16.667 || 1);
+  lastTime = time;
+  update(delta);
+  render(time);
+  requestAnimationFrame(frame);
+}
+
+/* Begin completely populated: there is no initial smoke fade-in. */
+while(particles.length < particleLimit){
+  const index = particles.length;
+  const sourceRole = index < armParticlesPerSide
+    ? 'left'
+    : index < armParticlesPerSide * 2
+      ? 'right'
+      : 'stem';
+  const slot = sourceRole === 'left'
+    ? index
+    : sourceRole === 'right'
+      ? index - armParticlesPerSide
+      : index - armParticlesPerSide * 2;
+  const particle = createParticle(sourceRole,slot);
+  particle.alpha = particle.targetAlpha;
+  particles.push(particle);
+}
+
+requestAnimationFrame(frame);
